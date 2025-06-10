@@ -1,0 +1,183 @@
+pipeline {
+    agent none
+
+    options {
+        skipDefaultCheckout()
+    }
+
+    stages {
+        stage('Get Code') {
+            agent { label 'agent-getcode' }
+            steps {
+                echo 'Ejecutando en agente:'
+                bat 'whoami'
+                bat 'hostname'
+                echo "Workspace: ${env.WORKSPACE}"
+
+                echo 'Clonando el repositorio...'
+                git 'https://github.com/isaaccalderon89/helloworld-master.git'
+                bat 'dir'
+
+                stash name: 'code', includes: '**'
+                cleanWs()
+            }
+        }
+
+        stage('Parallel Tests') {
+            parallel {
+                stage('Unit Tests') {
+                    agent { label 'agent-python' }
+                    steps {
+                        echo 'Ejecutando en agente:'
+                        bat 'whoami'
+                        bat 'hostname'
+                        echo "Workspace: ${env.WORKSPACE}"
+
+                        catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
+                            unstash 'code'
+                            bat '''
+                                set PYTHONPATH=.
+                                C:\\Users\\Isaac Calderón\\AppData\\Local\\Programs\\Python\\Python313\\Scripts\\pytest.exe --junitxml=result-unit.xml test\\unit
+                            '''
+                            junit 'result-unit.xml'
+                        }
+                        cleanWs()
+                    }
+                }
+
+                stage('REST Tests') {
+                    agent { label 'agent-python' }
+                    steps {
+                        echo 'Ejecutando en agente:'
+                        bat 'whoami'
+                        bat 'hostname'
+                        echo "Workspace: ${env.WORKSPACE}"
+
+                        catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
+                            unstash 'code'
+                            bat '''
+                                set FLASK_APP=app\\api.py
+                                start /B C:\\Users\\Isaac Calderón\\AppData\\Local\\Programs\\Python\\Python313\\Scripts\\flask.exe run
+                                start /B java -jar C:\\Ejercicios\\wiremock-standalone-3.13.0.jar --port 9090 --root-dir test\\wiremock
+
+                                ping -n 15 127.0.0.1 > nul
+
+                                set PYTHONPATH=.
+                                C:\\Users\\Isaac Calderón\\AppData\\Local\\Programs\\Python\\Python313\\Scripts\\pytest.exe --junitxml=result-rest.xml test\\rest
+                            '''
+                            junit 'result-rest.xml'
+                        }
+                        cleanWs()
+                    }
+                }
+
+                stage('Static Analysis') {
+                    agent { label 'agent-python' }
+                    steps {
+                        echo 'Ejecutando en agente:'
+                        bat 'whoami'
+                        bat 'hostname'
+                        echo "Workspace: ${env.WORKSPACE}"
+
+                        catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
+                            unstash 'code'
+                            bat '''
+                                C:\\Users\\Isaac Calderón\\AppData\\Local\\Programs\\Python\\Python313\\Scripts\\flake8.exe --exit-zero --statistics > flake8_report.txt
+                                type flake8_report.txt
+                            '''
+                            script {
+                                def output = readFile('flake8_report.txt')
+                                def findings = output.readLines().size()
+                                if (findings >= 10) {
+                                    currentBuild.result = 'FAILURE'
+                                } else if (findings >= 8) {
+                                    currentBuild.result = 'UNSTABLE'
+                                }
+                            }
+                        }
+                        cleanWs()
+                    }
+                }
+
+                stage('Security Test') {
+                    agent { label 'agent-python' }
+                    steps {
+                        echo 'Ejecutando en agente:'
+                        bat 'whoami'
+                        bat 'hostname'
+                        echo "Workspace: ${env.WORKSPACE}"
+
+                        catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
+                            unstash 'code'
+                            bat '''
+                                C:\\Users\\Isaac Calderón\\AppData\\Local\\Programs\\Python\\Python313\\Scripts\\bandit.exe -r . -f txt -o bandit_report.txt
+                                type bandit_report.txt
+                            '''
+                            script {
+                                def banditOutput = readFile('bandit_report.txt')
+                                def findings = banditOutput.findAll(/Issue:/).size()
+                                if (findings >= 4) {
+                                    currentBuild.result = 'FAILURE'
+                                } else if (findings >= 2) {
+                                    currentBuild.result = 'UNSTABLE'
+                                }
+                            }
+                        }
+                        cleanWs()
+                    }
+                }
+
+                stage('Coverage') {
+                    agent { label 'agent-python' }
+                    steps {
+                        echo 'Ejecutando en agente:'
+                        bat 'whoami'
+                        bat 'hostname'
+                        echo "Workspace: ${env.WORKSPACE}"
+
+                        catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
+                            unstash 'code'
+                            bat '''
+                                C:\\Users\\Isaac Calderón\\AppData\\Local\\Programs\\Python\\Python313\\Scripts\\coverage.exe run -m pytest test\\unit
+                                C:\\Users\\Isaac Calderón\\AppData\\Local\\Programs\\Python\\Python313\\Scripts\\coverage.exe report > coverage_report.txt
+                                type coverage_report.txt
+                            '''
+                            script {
+                                def coverageText = readFile('coverage_report.txt')
+                                def lineCoverageMatch = coverageText =~ /TOTAL\\s+\\d+\\s+\\d+\\s+(\\d+)%/
+                                if (lineCoverageMatch) {
+                                    def lineCoverage = lineCoverageMatch[0][1].toInteger()
+                                    if (lineCoverage < 85) {
+                                        currentBuild.result = 'FAILURE'
+                                    } else if (lineCoverage < 95) {
+                                        currentBuild.result = 'UNSTABLE'
+                                    }
+                                }
+                            }
+                        }
+                        cleanWs()
+                    }
+                }
+            }
+        }
+
+        stage('Performance') {
+            agent { label 'agent-java' }
+            steps {
+                echo 'Ejecutando en agente:'
+                bat 'whoami'
+                bat 'hostname'
+                echo "Workspace: ${env.WORKSPACE}"
+
+                catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
+                    unstash 'code'
+                    bat '''
+                        rem Flask debe estar ejecutándose en otra ventana o con start /B antes
+                        C:\\ApacheJMeter\\bin\\jmeter.bat -n -t test\\performance\\test-plan.jmx -l jmeter-result.jtl -e -o jmeter-report
+                    '''
+                }
+                cleanWs()
+            }
+        }
+    }
+}
